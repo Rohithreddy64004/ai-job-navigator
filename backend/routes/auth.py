@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from passlib.context import CryptContext
 from datetime import datetime
@@ -7,10 +7,11 @@ from database import users_collection
 from routes.email_utils import send_email  # ✅ Email sender (SMTP)
 from pydantic import BaseModel
 import secrets
-
+import os   
 # ---------------- CONFIG ----------------
 auth_router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 # Temporary in-memory store for password reset tokens
 reset_tokens = {}
@@ -23,9 +24,10 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
+
 # ---------------- SIGNUP ----------------
 @auth_router.post("/signup")
-async def signup(request: Request):
+async def signup(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     name = data.get("name")
     email = data.get("email")
@@ -48,27 +50,27 @@ async def signup(request: Request):
 
     users_collection.insert_one(user_data)
 
-    # ✅ Send welcome email
-    try:
-        subject = "🎉 Welcome to AI Job Navigator!"
-        body = f"""
-        <h2>Hi {name},</h2>
-        <p>Welcome to <b>AI Job Navigator</b> — your personalized career assistant.</p>
-        <p>Here’s what you can do:</p>
-        <ul>
-          <li>🧠 Learn with our AI Tutor</li>
-          <li>📄 Optimize your resume for top jobs</li>
-          <li>💼 Explore job opportunities tailored to your skills</li>
-        </ul>
-        <p>We’re thrilled to have you join us!</p>
-        <br>
-        <p>Best regards,<br><b>The AI Job Navigator Team</b></p>
-        """
-        send_email(email, subject, body)
-    except Exception as e:
-        print(f"⚠️ Email sending failed: {e}")
+    # ✅ Prepare welcome email
+    subject = "🎉 Welcome to AI Job Navigator!"
+    body = f"""
+    <h2>Hi {name},</h2>
+    <p>Welcome to <b>AI Job Navigator</b> — your personalized career assistant.</p>
+    <p>Here’s what you can do:</p>
+    <ul>
+      <li>🧠 Learn with our AI Tutor</li>
+      <li>📄 Optimize your resume for top jobs</li>
+      <li>💼 Explore job opportunities tailored to your skills</li>
+    </ul>
+    <p>We’re thrilled to have you join us!</p>
+    <br>
+    <p>Best regards,<br><b>The AI Job Navigator Team</b></p>
+    """
 
-    return JSONResponse({"message": "✅ User registered successfully and welcome email sent!"})
+    # ✅ Send email in background (non-blocking)
+    background_tasks.add_task(send_email, email, subject, body)
+
+    return JSONResponse({"message": "✅ User registered successfully! Welcome email will arrive shortly."})
+
 
 # ---------------- LOGIN ----------------
 @auth_router.post("/login")
@@ -92,6 +94,7 @@ async def login(request: Request):
         "user": {"name": user["name"], "email": user["email"]}
     })
 
+
 # ---------------- ADMIN: VIEW USERS ----------------
 @auth_router.get("/users")
 async def list_users():
@@ -105,9 +108,10 @@ async def list_users():
         })
     return {"users": users}
 
+
 # ---------------- FORGOT PASSWORD ----------------
 @auth_router.post("/forgot-password")
-async def forgot_password(data: ForgotPasswordRequest):
+async def forgot_password(data: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     user = users_collection.find_one({"email": data.email})
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -117,7 +121,7 @@ async def forgot_password(data: ForgotPasswordRequest):
     reset_tokens[data.email] = token
 
     # Reset link for frontend
-    reset_link = f"http://localhost:5173/reset-password?token={token}"
+    reset_link = f"{FRONTEND_URL}/reset-password?token={token}"
     subject = "🔑 Reset Your AI Job Navigator Password"
     body = f"""
     <h3>Hi {user['name']},</h3>
@@ -132,17 +136,16 @@ async def forgot_password(data: ForgotPasswordRequest):
     <p>Best regards,<br><b>AI Job Navigator Team</b></p>
     """
 
-    try:
-        send_email(data.email, subject, body)
-        return {"message": "✅ Password reset link sent successfully."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Email sending failed: {str(e)}")
+    # ✅ Send reset email in background
+    background_tasks.add_task(send_email, data.email, subject, body)
+
+    return {"message": "✅ Password reset link sent successfully!"}
+
 
 # ---------------- RESET PASSWORD ----------------
 @auth_router.post("/reset-password")
 async def reset_password(request: Request):
     try:
-        # Parse JSON data safely
         data = await request.json()
         print("📩 Received reset-password data:", data)
 
@@ -157,7 +160,7 @@ async def reset_password(request: Request):
         if not email:
             raise HTTPException(status_code=400, detail="Invalid or expired token.")
 
-        # Hash new password
+        # Hash new password and update
         hashed_password = pwd_context.hash(new_password)
         result = users_collection.update_one(
             {"email": email},
