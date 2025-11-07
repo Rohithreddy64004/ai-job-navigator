@@ -25,7 +25,7 @@ app = FastAPI(title="AI Job Navigator API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173"
+        "http://localhost:5173",
         "https://ai-job-navigator.web.app", 
         "https://ai-job-navigator-1fed0.web.app"
         "https://ai-job-navigator.firebaseapp.com"
