@@ -28,7 +28,7 @@ app.add_middleware(
         "http://localhost:5173",
         "https://ai-job-navigator.web.app", 
         "https://ai-job-navigator-1fed0.web.app",
-        "https://ai-job-navigator.firebaseapp.com",
+        "https://ai-job-navigator.firebaseapp.com"
         ],  # Your React frontend
     allow_credentials=True,
     allow_methods=["*"],
