@@ -11,6 +11,7 @@ import os
 import requests
 from dotenv import load_dotenv
 from typing import Dict
+import json
 
 # ✅ Firebase imports
 import firebase_admin
@@ -23,9 +24,12 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-job-navigator-1fed0.web.app")
 
-# ✅ Initialize Firebase Admin with your service account
+# ✅ Initialize Firebase Admin using credentials from .env
 if not firebase_admin._apps:
-    cred = credentials.Certificate("firebase_service_account.json")
+    firebase_json = os.getenv("FIREBASE_CREDENTIALS")
+    if not firebase_json:
+        raise RuntimeError("❌ FIREBASE_CREDENTIALS not found in environment variables.")
+    cred = credentials.Certificate(json.loads(firebase_json))
     firebase_admin.initialize_app(cred)
 
 # ✅ In-memory token store with expiry tracking
