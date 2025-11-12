@@ -3,25 +3,28 @@ from fastapi.responses import JSONResponse
 from passlib.context import CryptContext
 from datetime import datetime
 from bson import ObjectId
+from pydantic import BaseModel, EmailStr
 from database import users_collection
 from routes.email_utils import send_email
-from pydantic import BaseModel
 import secrets
 import os
-import requests  # ✅ To verify Google tokens
+import requests
+from dotenv import load_dotenv
 
 # ---------------- CONFIG ----------------
+load_dotenv()  # ✅ Load environment variables
 auth_router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-job-navigator-1fed0.web.app")
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")  # from Firebase project settings
 
-reset_tokens = {}  # in-memory token store (use Redis for production)
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-job-navigator-1fed0.web.app")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
+reset_tokens = {}  # Temporary store (⚠️ use Redis in production)
 
 
 # ---------------- MODELS ----------------
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    email: EmailStr
 
 class ResetPasswordRequest(BaseModel):
     token: str
@@ -47,28 +50,26 @@ async def signup(request: Request, background_tasks: BackgroundTasks):
 
     hashed_password = pwd_context.hash(password)
     user_data = {
-        "name": name,
-        "email": email,
+        "name": name.strip(),
+        "email": email.lower(),
         "password": hashed_password,
         "auth_type": "manual",
-        "signup_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "signup_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
     users_collection.insert_one(user_data)
 
-    # Send welcome email in background
+    # Send welcome email asynchronously
     subject = "🎉 Welcome to AI Job Navigator!"
     body = f"""
     <h2>Hi {name},</h2>
     <p>Welcome to <b>AI Job Navigator</b> — your personalized career assistant.</p>
-    <p>Here’s what you can do:</p>
     <ul>
       <li>🧠 Learn with our AI Tutor</li>
       <li>📄 Optimize your resume</li>
       <li>💼 Explore jobs tailored to your skills</li>
     </ul>
     <p>We’re thrilled to have you join us!</p>
-    <br>
     <p>Best regards,<br><b>The AI Job Navigator Team</b></p>
     """
     background_tasks.add_task(send_email, email, subject, body)
@@ -84,7 +85,7 @@ async def login(request: Request):
     password = data.get("password")
 
     if not all([email, password]):
-        raise HTTPException(status_code=400, detail="Email and password required.")
+        raise HTTPException(status_code=400, detail="Email and password are required.")
 
     user = users_collection.find_one({"email": email})
     if not user:
@@ -105,52 +106,59 @@ async def google_auth(request: GoogleAuthRequest, background_tasks: BackgroundTa
     try:
         id_token = request.token
 
-        # Verify Google token using Firebase endpoint
+        # Verify Google token via Google endpoint
         verify_url = f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}"
-        response = requests.get(verify_url)
+        response = requests.get(verify_url, timeout=5)
         data = response.json()
 
-        if "error" in data or data.get("aud") != GOOGLE_CLIENT_ID:
-            raise HTTPException(status_code=401, detail="Invalid Google token.")
+        if "error" in data:
+            raise HTTPException(status_code=401, detail=f"Invalid Google token: {data.get('error_description')}")
 
-        email = data["email"]
+        if data.get("aud") != GOOGLE_CLIENT_ID:
+            raise HTTPException(status_code=401, detail="Invalid Google Client ID.")
+
+        email = data.get("email")
         name = data.get("name", "User")
 
-        # Check if user already exists
+        # Check or create user
         user = users_collection.find_one({"email": email})
         if not user:
             users_collection.insert_one({
                 "name": name,
                 "email": email,
                 "auth_type": "google",
-                "signup_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "signup_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             })
-            # Send welcome email
             subject = "🎉 Welcome via Google Sign-In!"
             body = f"<h2>Hi {name},</h2><p>Welcome to AI Job Navigator! Thanks for signing in with Google.</p>"
             background_tasks.add_task(send_email, email, subject, body)
 
         return {"message": "✅ Google authentication successful!", "user": {"name": name, "email": email}}
 
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Network error verifying Google token: {str(e)}")
     except Exception as e:
         print("⚠️ Google Auth Error:", e)
-        raise HTTPException(status_code=400, detail="Google authentication failed.")
+        raise HTTPException(status_code=400, detail=f"Google authentication failed: {str(e)}")
 
 
 # ---------------- ADMIN: VIEW USERS ----------------
 @auth_router.get("/users")
 async def list_users():
-    users = [
-        {
-            "id": str(u["_id"]),
-            "name": u["name"],
-            "email": u["email"],
-            "auth_type": u.get("auth_type", "manual"),
-            "signup_date": u.get("signup_date", "")
-        }
-        for u in users_collection.find()
-    ]
-    return {"users": users}
+    try:
+        users = [
+            {
+                "id": str(u["_id"]),
+                "name": u["name"],
+                "email": u["email"],
+                "auth_type": u.get("auth_type", "manual"),
+                "signup_date": u.get("signup_date", "")
+            }
+            for u in users_collection.find()
+        ]
+        return {"users": users}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
 
 
 # ---------------- FORGOT PASSWORD ----------------
@@ -172,6 +180,7 @@ async def forgot_password(data: ForgotPasswordRequest, background_tasks: Backgro
     <p>If you didn't request this, ignore this email.</p>
     """
     background_tasks.add_task(send_email, data.email, subject, body)
+
     return {"message": "✅ Password reset link sent successfully!"}
 
 
@@ -184,6 +193,7 @@ async def reset_password(data: ResetPasswordRequest):
 
     hashed_password = pwd_context.hash(data.new_password)
     result = users_collection.update_one({"email": email}, {"$set": {"password": hashed_password}})
+
     if result.modified_count == 0:
         raise HTTPException(status_code=500, detail="Password update failed.")
 
