@@ -13,4 +13,5 @@ reportlab
 PyMuPDF
 PyPDF2
 pydantic[email]
+firebase-admin
 
