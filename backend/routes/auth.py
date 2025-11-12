@@ -12,13 +12,21 @@ import requests
 from dotenv import load_dotenv
 from typing import Dict
 
+# ✅ Firebase imports
+import firebase_admin
+from firebase_admin import auth, credentials
+
 # ---------------- CONFIG ----------------
 load_dotenv()
 auth_router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-job-navigator-1fed0.web.app")
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
+# ✅ Initialize Firebase Admin with your service account
+if not firebase_admin._apps:
+    cred = credentials.Certificate("firebase_service_account.json")
+    firebase_admin.initialize_app(cred)
 
 # ✅ In-memory token store with expiry tracking
 reset_tokens: Dict[str, Dict[str, any]] = {}  # {email: {"token": str, "expires": datetime}}
@@ -39,7 +47,7 @@ def create_reset_token(email: str) -> str:
     token = secrets.token_urlsafe(32)
     reset_tokens[email] = {
         "token": token,
-        "expires": datetime.utcnow() + timedelta(hours=1)  # expires in 1 hour
+        "expires": datetime.utcnow() + timedelta(hours=1)
     }
     return token
 
@@ -114,23 +122,16 @@ async def login(request: Request):
         "user": {"name": user["name"], "email": user["email"]},
     })
 
-# ---------------- GOOGLE SIGN-IN ----------------
+# ---------------- GOOGLE SIGN-IN (Firebase token verify) ----------------
 @auth_router.post("/google-auth")
 async def google_auth(request: GoogleAuthRequest, background_tasks: BackgroundTasks):
     try:
-        id_token = request.token
-        verify_url = f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}"
-        response = requests.get(verify_url, timeout=5)
-        data = response.json()
+        token = request.token
 
-        if response.status_code != 200 or "error" in data:
-            raise HTTPException(status_code=401, detail=f"Invalid Google token: {data.get('error_description')}")
-
-        if data.get("aud") != GOOGLE_CLIENT_ID:
-            raise HTTPException(status_code=401, detail="Invalid Google Client ID.")
-
-        email = data.get("email").lower()
-        name = data.get("name", "User")
+        # ✅ Verify Firebase ID token
+        decoded_token = auth.verify_id_token(token)
+        email = decoded_token.get("email").lower()
+        name = decoded_token.get("name", "User")
 
         user = users_collection.find_one({"email": email})
         if not user:
@@ -146,11 +147,12 @@ async def google_auth(request: GoogleAuthRequest, background_tasks: BackgroundTa
 
         return {"message": "✅ Google authentication successful!", "user": {"name": name, "email": email}}
 
-    except requests.exceptions.RequestException:
-        raise HTTPException(status_code=500, detail="Network error verifying Google token.")
+    except firebase_admin._auth_utils.InvalidIdTokenError:
+        raise HTTPException(status_code=401, detail="Invalid Firebase token.")
+    except firebase_admin._auth_utils.ExpiredIdTokenError:
+        raise HTTPException(status_code=401, detail="Expired Firebase token.")
     except Exception as e:
-        print("⚠️ Google Auth Error:", e)
-        raise HTTPException(status_code=400, detail=f"Google authentication failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Firebase authentication failed: {str(e)}")
 
 # ---------------- ADMIN: VIEW USERS ----------------
 @auth_router.get("/users")
