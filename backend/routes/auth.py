@@ -8,9 +8,12 @@ from database import users_collection
 from routes.email_utils import send_email
 import secrets
 import os
-import json
+import requests
 from dotenv import load_dotenv
 from typing import Dict
+import json
+
+# ✅ Firebase imports
 import firebase_admin
 from firebase_admin import auth, credentials
 
@@ -85,7 +88,6 @@ async def signup(request: Request, background_tasks: BackgroundTasks):
     }
     users_collection.insert_one(user_data)
 
-    # ✅ Send Welcome Email
     subject = "🎉 Welcome to AI Job Navigator!"
     body = f"""
     <h2>Hi {name},</h2>
@@ -143,7 +145,6 @@ async def google_auth(request: GoogleAuthRequest, background_tasks: BackgroundTa
                 "auth_type": "google",
                 "signup_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             })
-
             subject = "🎉 Welcome via Google Sign-In!"
             body = f"<h2>Hi {name},</h2><p>Welcome to AI Job Navigator! Thanks for signing in with Google.</p>"
             background_tasks.add_task(send_email, email, subject, body)
